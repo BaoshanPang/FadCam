@@ -497,4 +497,44 @@ public class SharedPreferencesManager {
     }
     // ----- Fix Ended for this class (SharedPreferencesManager_applock) -----
 
+    // ----- Remote control (ported) -----
+    public static final String PREF_REMOTE_ENABLED = "remote_enabled";
+    public static final String PREF_REMOTE_PORT = "remote_port";
+    public static final String PREF_REMOTE_USERNAME = "remote_username";
+    public static final String PREF_REMOTE_PASSWORD = "remote_password";
+    public static final int DEFAULT_REMOTE_PORT = 8080;
+
+    public boolean isRemoteEnabled() {
+        return sharedPreferences.getBoolean(PREF_REMOTE_ENABLED, false);
+    }
+
+    public void setRemoteEnabled(boolean enabled) {
+        sharedPreferences.edit().putBoolean(PREF_REMOTE_ENABLED, enabled).apply();
+    }
+
+    public int getRemotePort() {
+        return sharedPreferences.getInt(PREF_REMOTE_PORT, DEFAULT_REMOTE_PORT);
+    }
+
+    public void setRemotePort(int port) {
+        sharedPreferences.edit().putInt(PREF_REMOTE_PORT, port).apply();
+    }
+
+    public String getRemoteUsername() {
+        return sharedPreferences.getString(PREF_REMOTE_USERNAME, "fadcam");
+    }
+
+    public void setRemoteUsername(String username) {
+        sharedPreferences.edit().putString(PREF_REMOTE_USERNAME, username).apply();
+    }
+
+    public String getRemotePassword() {
+        return sharedPreferences.getString(PREF_REMOTE_PASSWORD, "");
+    }
+
+    public void setRemotePassword(String password) {
+        sharedPreferences.edit().putString(PREF_REMOTE_PASSWORD, password).apply();
+    }
+    // ----- End remote control -----
+
 }

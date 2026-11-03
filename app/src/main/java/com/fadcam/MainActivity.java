@@ -142,6 +142,18 @@ public class MainActivity extends AppCompatActivity {
 
         setContentView(R.layout.activity_main);
 
+        // Remote control: bring the server back up if it was left enabled.
+        try {
+            if (sharedPreferencesManager.isRemoteEnabled()) {
+                Intent remoteIntent = new Intent(this, com.fadcam.remote.RemoteServerService.class);
+                remoteIntent.setAction(com.fadcam.remote.RemoteServerService.ACTION_START);
+                startService(remoteIntent);
+                android.util.Log.d("MainActivity", "Remote server start requested");
+            }
+        } catch (Exception e) {
+            android.util.Log.e("MainActivity", "Failed to start remote server", e);
+        }
+
         viewPager = findViewById(R.id.view_pager);
         bottomNavigationView = findViewById(R.id.bottom_navigation);
 
@@ -189,22 +201,6 @@ public class MainActivity extends AppCompatActivity {
                     case 4:
                         bottomNavigationView.setSelectedItemId(R.id.navigation_about);
                         break;
-                }
-            }
-        });
-
-        // Add custom badge to the Remote tab in BottomNavigationView
-        bottomNavigationView.post(() -> {
-            ViewGroup menuView = (ViewGroup) bottomNavigationView.getChildAt(0);
-            if (menuView != null && menuView.getChildCount() > 2) {
-                View remoteTab = menuView.getChildAt(2); // 0:home, 1:records, 2:remote
-                if (remoteTab instanceof ViewGroup) {
-                    // Prevent duplicate badge
-                    View existingBadge = ((ViewGroup) remoteTab).findViewById(R.id.badge_text);
-                    if (existingBadge == null) {
-                        View badge = getLayoutInflater().inflate(R.layout.custom_badge, (ViewGroup) remoteTab, false);
-                        ((ViewGroup) remoteTab).addView(badge);
-                    }
                 }
             }
         });

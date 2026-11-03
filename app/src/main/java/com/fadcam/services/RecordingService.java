@@ -15,6 +15,11 @@ import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureRequest;
 import android.media.MediaRecorder;
+import android.graphics.ImageFormat;
+import android.graphics.Rect;
+import android.graphics.YuvImage;
+import android.media.Image;
+import android.media.ImageReader;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.net.Uri;
@@ -64,7 +69,9 @@ import com.fadcam.VideoCodec;
 import com.fadcam.ui.LocationHelper;
 import com.fadcam.ui.RecordsAdapter;
 import com.fadcam.ui.GeotagHelper;
+import com.fadcam.remote.RemoteStreamHub;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -141,6 +148,18 @@ public class RecordingService extends Service {
     // ----- Fix Start for this class (RecordingService_rollover_callback_flag) -----
     // Field isRolloverInProgressJustClosedDevice removed as it's obsolete.
     // ----- Fix Ended for this class (RecordingService_rollover_callback_flag) -----
+
+    // ----- Remote control (ported) -----
+    /** Mirrors the live recording state for the remote HTTP server. */
+    public static volatile String sRemoteState = "NONE";
+    private ImageReader remoteImageReader;
+    private Surface remoteReaderSurface;
+    private long lastRemoteFrameMs = 0L;
+    private int remoteRotation = 90; // clockwise degrees to make frames upright
+    private static final long REMOTE_FRAME_INTERVAL_MS = 120L; // ~8 fps
+    private static final int REMOTE_STREAM_WIDTH = 640;
+    private static final int REMOTE_STREAM_HEIGHT = 480;
+    // ----- End remote control -----
 
     // ----- Fix Start for this class (RecordingService) -----
     // Re-introduce isRecordingTorchEnabled to manage torch state *during an active recording session only*
@@ -288,6 +307,7 @@ public class RecordingService extends Service {
             if (recordingState == RecordingState.NONE) {
                 // Update the UI and Service state atomically
                 recordingState = RecordingState.STARTING;
+                sRemoteState = "STARTING";
                 sharedPreferencesManager.setRecordingInProgress(true);
                 
                 // Load video splitting preferences
@@ -585,6 +605,8 @@ public class RecordingService extends Service {
 
         final RecordingState previousState = recordingState;
         recordingState = RecordingState.NONE;
+        sRemoteState = "NONE";
+        RemoteStreamHub.get().setCameraActive(false);
         sharedPreferencesManager.setRecordingInProgress(false);
 
         boolean stoppedCleanly = false;
@@ -727,6 +749,7 @@ public class RecordingService extends Service {
             if (mediaRecorder != null) {
                 mediaRecorder.pause();
                 recordingState = RecordingState.PAUSED;
+                sRemoteState = "PAUSED";
                 sharedPreferencesManager.setRecordingInProgress(false); // Consider if 'paused' is 'in progress'
                 setupRecordingResumeNotification(); // Update notification for resume action
                 showRecordingInPausedToast();
@@ -763,6 +786,7 @@ public class RecordingService extends Service {
 
                 mediaRecorder.resume();
                 recordingState = RecordingState.IN_PROGRESS;
+                sRemoteState = "IN_PROGRESS";
                 sharedPreferencesManager.setRecordingInProgress(true);
                 setupRecordingInProgressNotification(); // Update notification
                 showRecordingResumedToast();
@@ -790,9 +814,12 @@ public class RecordingService extends Service {
         try { if (captureSession != null) { captureSession.close(); Log.d(TAG,"Rel: CaptureSession closed."); } } catch (Exception e) { Log.w(TAG,"Err close CaptureSession",e); } finally { captureSession = null; }
         try { if (cameraDevice != null) { cameraDevice.close(); Log.d(TAG,"Rel: CameraDevice closed."); } } catch (Exception e) { Log.w(TAG,"Err close CameraDevice",e); } finally { cameraDevice = null; }
         releaseMediaRecorderSafely(); // Release recorder object
+        releaseRemoteImageReader(); // Remote live view reader
+        RemoteStreamHub.get().setCameraActive(false);
 
         // Reset state if not already done
         recordingState = RecordingState.NONE;
+        sRemoteState = "NONE";
         if (sharedPreferencesManager.isRecordingInProgress()){ // Check pref mismatch
             Log.w(TAG,"Release: Pref indicated recording, resetting it.");
             sharedPreferencesManager.setRecordingInProgress(false);
@@ -2032,6 +2059,9 @@ public class RecordingService extends Service {
                 // Start repeating request
                 session.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler);
                 Log.d(TAG, "Started repeating request for standard session");
+
+                // Remote live view is now able to receive frames.
+                RemoteStreamHub.get().setCameraActive(true);
                 
                 // Handle recording state
                 handleSessionConfigured();
@@ -3480,6 +3510,9 @@ public class RecordingService extends Service {
                                      CameraCharacteristics characteristics) {
         try {
             Log.d(TAG, "Creating standard session with optimized frame rate settings");
+
+            // Remote live view: attach the low-res YUV reader (best effort).
+            setupRemoteImageReader(surfaces);
             
             // Create standard request builder
             captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
@@ -3504,6 +3537,211 @@ public class RecordingService extends Service {
         } catch (Exception e) {
             Log.e(TAG, "Failed to create standard session", e);
             stopRecording();
+        }
+    }
+
+    // ----- Remote live view (ported) -----
+
+    /**
+     * Adds a small YUV ImageReader surface to the capture session so the remote
+     * HTTP server can serve an MJPEG live view. Best effort: on failure the
+     * session is created without it so recording is unaffected.
+     */
+    private void setupRemoteImageReader(List<Surface> surfaces) {
+        try {
+            if (!sharedPreferencesManager.isRemoteEnabled()) {
+                return;
+            }
+            if (remoteImageReader == null) {
+                remoteRotation = computeRemoteRotation();
+                remoteImageReader = ImageReader.newInstance(
+                        REMOTE_STREAM_WIDTH, REMOTE_STREAM_HEIGHT, ImageFormat.YUV_420_888, 2);
+                remoteImageReader.setOnImageAvailableListener(this::onRemoteImageAvailable, backgroundHandler);
+                remoteReaderSurface = remoteImageReader.getSurface();
+                Log.d(TAG, "remote: image reader created (" + REMOTE_STREAM_WIDTH + "x" + REMOTE_STREAM_HEIGHT
+                        + "), rotation=" + remoteRotation);
+            }
+            if (remoteReaderSurface != null) {
+                boolean already = false;
+                for (Surface s : surfaces) {
+                    if (s == remoteReaderSurface) { already = true; break; }
+                }
+                if (!already) {
+                    surfaces.add(remoteReaderSurface);
+                    Log.d(TAG, "remote: image reader surface added to session");
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "remote: failed to set up image reader (continuing without live view)", e);
+            releaseRemoteImageReader();
+        }
+    }
+
+    private void releaseRemoteImageReader() {
+        try {
+            if (remoteImageReader != null) {
+                remoteImageReader.close();
+            }
+        } catch (Exception ignored) {
+        } finally {
+            remoteImageReader = null;
+            remoteReaderSurface = null;
+        }
+    }
+
+    private void onRemoteImageAvailable(ImageReader reader) {
+        Image image = null;
+        try {
+            image = reader.acquireLatestImage();
+            if (image == null) {
+                return;
+            }
+            long now = System.currentTimeMillis();
+            if (now - lastRemoteFrameMs < REMOTE_FRAME_INTERVAL_MS) {
+                return;
+            }
+            lastRemoteFrameMs = now;
+
+            int w = image.getWidth();
+            int h = image.getHeight();
+            byte[] nv21 = new byte[w * h + (w * h) / 2];
+            yuv420ToNv21(image, nv21);
+
+            // Orient the frame the same way the recorded video is oriented.
+            int outW = w;
+            int outH = h;
+            if (remoteRotation == 90 || remoteRotation == 270) {
+                nv21 = rotateNv21(nv21, w, h, remoteRotation);
+                outW = h;
+                outH = w;
+            } else if (remoteRotation == 180) {
+                nv21 = rotateNv21(nv21, w, h, 180);
+            }
+
+            YuvImage yuv = new YuvImage(nv21, ImageFormat.NV21, outW, outH, null);
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            yuv.compressToJpeg(new Rect(0, 0, outW, outH), 70, baos);
+            RemoteStreamHub.get().pushJpeg(baos.toByteArray(), outW, outH);
+        } catch (Exception e) {
+            Log.w(TAG, "remote: frame conversion failed", e);
+        } finally {
+            if (image != null) {
+                try { image.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    /** Clockwise rotation (degrees) needed to make the camera buffer upright. */
+    private int computeRemoteRotation() {
+        try {
+            CameraManager cm = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+            CameraType type = sharedPreferencesManager.getCameraSelection();
+            String id = getCameraId(cm, type);
+            if (id != null) {
+                CameraCharacteristics c = cm.getCameraCharacteristics(id);
+                Integer so = c.get(CameraCharacteristics.SENSOR_ORIENTATION);
+                if (so != null) {
+                    return ((so % 360) + 360) % 360;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "remote: could not read sensor orientation, assuming 90", e);
+        }
+        return 90;
+    }
+
+    /**
+     * Rotate a tightly packed NV21 buffer clockwise by 90, 180 or 270 degrees.
+     * Returns a new buffer sized for the rotated image.
+     */
+    private static byte[] rotateNv21(byte[] src, int w, int h, int degrees) {
+        int ySize = w * h;
+        int cw = w / 2;
+        int ch = h / 2;
+        byte[] dst = new byte[src.length];
+
+        if (degrees == 180) {
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    dst[(h - 1 - y) * w + (w - 1 - x)] = src[y * w + x];
+                }
+            }
+            for (int y = 0; y < ch; y++) {
+                for (int x = 0; x < cw; x++) {
+                    int s = (y * cw + x) * 2;
+                    int d = ((ch - 1 - y) * cw + (cw - 1 - x)) * 2;
+                    dst[ySize + d] = src[ySize + s];
+                    dst[ySize + d + 1] = src[ySize + s + 1];
+                }
+            }
+            return dst;
+        }
+
+        int dw = h; // destination width
+        int dwc = h / 2; // destination chroma width
+        if (degrees == 90) {
+            // clockwise: (x,y) -> (h-1-y, x)
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    dst[x * dw + (h - 1 - y)] = src[y * w + x];
+                }
+            }
+            for (int y = 0; y < ch; y++) {
+                for (int x = 0; x < cw; x++) {
+                    int s = (y * cw + x) * 2;
+                    int d = (x * dwc + (ch - 1 - y)) * 2;
+                    dst[ySize + d] = src[ySize + s];
+                    dst[ySize + d + 1] = src[ySize + s + 1];
+                }
+            }
+        } else {
+            // 270 clockwise (90 counter-clockwise): (x,y) -> (y, w-1-x)
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    dst[(w - 1 - x) * dw + y] = src[y * w + x];
+                }
+            }
+            for (int y = 0; y < ch; y++) {
+                for (int x = 0; x < cw; x++) {
+                    int s = (y * cw + x) * 2;
+                    int d = ((cw - 1 - x) * dwc + y) * 2;
+                    dst[ySize + d] = src[ySize + s];
+                    dst[ySize + d + 1] = src[ySize + s + 1];
+                }
+            }
+        }
+        return dst;
+    }
+
+    /** Convert a YUV_420_888 image to tightly packed NV21, respecting plane strides. */
+    private static void yuv420ToNv21(Image image, byte[] out) {
+        int w = image.getWidth();
+        int h = image.getHeight();
+        Image.Plane[] planes = image.getPlanes();
+        java.nio.ByteBuffer yBuf = planes[0].getBuffer();
+        java.nio.ByteBuffer uBuf = planes[1].getBuffer();
+        java.nio.ByteBuffer vBuf = planes[2].getBuffer();
+
+        int yRowStride = planes[0].getRowStride();
+        int pos = 0;
+        for (int row = 0; row < h; row++) {
+            int base = row * yRowStride;
+            for (int col = 0; col < w; col++) {
+                out[pos++] = yBuf.get(base + col);
+            }
+        }
+
+        int uRowStride = planes[1].getRowStride();
+        int uPixStride = planes[1].getPixelStride();
+        int vRowStride = planes[2].getRowStride();
+        int vPixStride = planes[2].getPixelStride();
+        int chromaH = h / 2;
+        int chromaW = w / 2;
+        for (int row = 0; row < chromaH; row++) {
+            for (int col = 0; col < chromaW; col++) {
+                out[pos++] = vBuf.get(row * vRowStride + col * vPixStride);
+                out[pos++] = uBuf.get(row * uRowStride + col * uPixStride);
+            }
         }
     }
 
@@ -3585,6 +3823,7 @@ public class RecordingService extends Service {
                 // Start the MediaRecorder
                 mediaRecorder.start();
                 recordingState = RecordingState.IN_PROGRESS;
+                sRemoteState = "IN_PROGRESS";
                 
                 // ----- Fix Start for this method(handleSessionConfigured) -----
                 // Use SystemClock.elapsedRealtime() instead of System.currentTimeMillis() for consistency with HomeFragment
