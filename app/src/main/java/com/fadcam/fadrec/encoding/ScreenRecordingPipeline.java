@@ -486,7 +486,8 @@ public class ScreenRecordingPipeline {
                     continue;
                 }
                 for (String type : info.getSupportedTypes()) {
-                    if (VIDEO_MIME_TYPE.equalsIgnoreCase(type) && info.isSoftwareOnly()) {
+                    if (VIDEO_MIME_TYPE.equalsIgnoreCase(type)
+                            && (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || info.isSoftwareOnly())) {
                         return info.getName();
                     }
                 }

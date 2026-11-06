@@ -7,7 +7,9 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.view.Display;
 import android.util.Size;
 import android.view.Surface;
 import android.view.WindowManager;
@@ -110,8 +112,15 @@ public class PhotoCaptureActivity extends ComponentActivity {
                 SharedPreferencesManager prefs = SharedPreferencesManager.getInstance(this);
                 Size targetSize = resolveTargetResolution(prefs);
                 int targetRotation = Surface.ROTATION_0;
-                if (getDisplay() != null) {
-                    targetRotation = getDisplay().getRotation();
+                Display display = null;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    display = getDisplay();
+                }
+                if (display == null) {
+                    display = ((WindowManager) getSystemService(WINDOW_SERVICE)).getDefaultDisplay();
+                }
+                if (display != null) {
+                    targetRotation = display.getRotation();
                 }
                 ImageCapture imageCapture;
                 if (targetSize != null) {

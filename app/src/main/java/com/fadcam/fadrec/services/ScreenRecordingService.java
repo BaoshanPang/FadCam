@@ -245,7 +245,8 @@ public class ScreenRecordingService extends Service {
         }
 
         Notification notification = createNotification();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        // The 3-arg startForeground() (service types) was introduced in Android 10 (API 29)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
         } else {
             startForeground(NOTIFICATION_ID, notification);

@@ -4,6 +4,7 @@ import com.fadcam.Log;
 import com.fadcam.FLog;
 import android.content.Context;
 import android.media.MediaCodec;
+import android.os.Build;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
@@ -1334,7 +1335,7 @@ public class GLRecordingPipeline {
             // other encoder family (Exynos/MTK/Unisoc). HEVC keeps prepend.
             if (MediaFormat.MIMETYPE_VIDEO_AVC.equals(currentMimeType)) {
                 try {
-                    String codecName = videoEncoder.getCanonicalName();
+                    String codecName = encoderCanonicalNameSafe(videoEncoder);
                     if (codecName != null && codecName.contains("qcom")) {
                         format.setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 0);
                         FLog.i(TAG, "[ENCODER] QCOM AVC: prepend-sps-pps-to-idr disabled so csd is exposed in the output format (S20 FE AVC fix)");
@@ -1344,7 +1345,7 @@ public class GLRecordingPipeline {
             videoEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
             // Encoder identity — critical for OEM-specific CSD bugs (Samsung C2 vs Google C2 etc.)
             try {
-                FLog.i(TAG, "[ENCODER] Video encoder: " + videoEncoder.getCanonicalName() + " | MIME=" + currentMimeType
+                FLog.i(TAG, "[ENCODER] Video encoder: " + encoderCanonicalNameSafe(videoEncoder) + " | MIME=" + currentMimeType
                         + " | " + encoderWidth + "x" + encoderHeight);
             } catch (Exception ignored) {}
             
@@ -1373,7 +1374,7 @@ public class GLRecordingPipeline {
                 // Same QCOM AVC prepend-sps-pps quirk as Strategy 1 — see above.
                 if (MediaFormat.MIMETYPE_VIDEO_AVC.equals(currentMimeType)) {
                     try {
-                        String codecName = videoEncoder.getCanonicalName();
+                        String codecName = encoderCanonicalNameSafe(videoEncoder);
                         if (codecName != null && codecName.contains("qcom")) {
                             format.setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 0);
                             FLog.i(TAG, "[ENCODER] QCOM AVC: prepend-sps-pps-to-idr disabled so csd is exposed in the output format (S20 FE AVC fix)");
@@ -1382,7 +1383,7 @@ public class GLRecordingPipeline {
                 }
                 videoEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
                 try {
-                    FLog.i(TAG, "[ENCODER] Video encoder (H.264 fallback): " + videoEncoder.getCanonicalName()
+                    FLog.i(TAG, "[ENCODER] Video encoder (H.264 fallback): " + encoderCanonicalNameSafe(videoEncoder)
                             + " | MIME=" + currentMimeType + " | " + encoderWidth + "x" + encoderHeight);
                 } catch (Exception ignored) {}
                 
@@ -3941,4 +3942,22 @@ public class GLRecordingPipeline {
             glRenderer.releasePreviewEGL();
         }
     }
+    /**
+     * MediaCodec#getCanonicalName() requires API 29; NoSuchMethodError is an Error
+     * (not caught by catch(Exception)). Fall back to getName() on older devices.
+     */
+    private static String encoderCanonicalNameSafe(MediaCodec codec) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                return codec.getCanonicalName();
+            } catch (Exception ignored) {
+            }
+        }
+        try {
+            return codec.getName();
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
 }

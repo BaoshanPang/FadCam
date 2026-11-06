@@ -1,5 +1,6 @@
 package com.fadcam.ui;
 
+import android.os.Build;
 import com.fadcam.Log;
 import com.fadcam.FLog;
 import android.content.ClipData;
@@ -92,7 +93,11 @@ public class VideoInfoBottomSheet extends BottomSheetDialogFragment {
     public void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         if (getArguments() != null) {
-            videoUri = getArguments().getParcelable(ARG_VIDEO_URI, android.net.Uri.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                videoUri = getArguments().getParcelable(ARG_VIDEO_URI, android.net.Uri.class);
+            } else {
+                videoUri = getArguments().getParcelable(ARG_VIDEO_URI);
+            }
             displayName = getArguments().getString(ARG_DISPLAY_NAME);
             fileSize = getArguments().getLong(ARG_FILE_SIZE);
             lastModified = getArguments().getLong(ARG_LAST_MODIFIED);

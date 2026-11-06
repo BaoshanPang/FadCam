@@ -1,5 +1,6 @@
 package com.fadcam.ui.picker;
 
+import android.os.Build;
 import com.fadcam.Log;
 import com.fadcam.FLog;
 import android.animation.AnimatorSet;
@@ -385,7 +386,12 @@ public class PickerBottomSheetFragment extends BottomSheetDialogFragment {
             title = args.getString(ARG_TITLE, "");
             selectedId = args.getString(ARG_SELECTED_ID, null);
             resultKey = args.getString(ARG_RESULT_KEY, RESULT_KEY);
-            ArrayList<OptionItem> list = args.getParcelableArrayList(ARG_ITEMS, OptionItem.class);
+            ArrayList<OptionItem> list;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                list = args.getParcelableArrayList(ARG_ITEMS, OptionItem.class);
+            } else {
+                list = args.getParcelableArrayList(ARG_ITEMS);
+            }
             if (list != null) items = list;
             // If strict-items-only is requested and no items were provided explicitly,
             // keep items empty rather than falling back to any previous state.
