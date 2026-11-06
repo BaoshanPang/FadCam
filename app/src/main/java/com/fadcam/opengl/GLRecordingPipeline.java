@@ -1173,6 +1173,10 @@ public class GLRecordingPipeline {
      * Only applies essential settings that all devices should support.
      */
     private void configureBasicEncoder(MediaFormat format) {
+        configureBasicEncoder(format, true);
+    }
+
+    private void configureBasicEncoder(MediaFormat format, boolean withPrependHeader) {
         // Essential settings that all encoders must support
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
         format.setInteger(MediaFormat.KEY_BIT_RATE, videoBitrate);
@@ -1182,10 +1186,12 @@ public class GLRecordingPipeline {
         // restart after a seek even without re-reading the init segment.
         // Without this, the decoder flush after seek (maybeDropBuffersToKeyframe)
         // leaves the decoder without codec config → video freezes, audio plays.
-        try {
-            format.setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1);
-        } catch (Exception e) {
-            FLog.w(TAG, "KEY_PREPEND_HEADER_TO_SYNC_FRAMES not supported on this device");
+        if (withPrependHeader) {
+            try {
+                format.setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1);
+            } catch (Exception e) {
+                FLog.w(TAG, "KEY_PREPEND_HEADER_TO_SYNC_FRAMES not supported on this device");
+            }
         }
 
         // ESSENTIAL: Bitrate mode — CBR for streaming (hard bandwidth cap), VBR for local recording (quality)
@@ -1342,7 +1348,7 @@ public class GLRecordingPipeline {
                     }
                 } catch (Exception ignored) {}
             }
-            videoEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            videoEncoder = configureVideoEncoderWithFallback(videoEncoder, format, currentMimeType);
             // Encoder identity — critical for OEM-specific CSD bugs (Samsung C2 vs Google C2 etc.)
             try {
                 FLog.i(TAG, "[ENCODER] Video encoder: " + encoderCanonicalNameSafe(videoEncoder) + " | MIME=" + currentMimeType
@@ -1381,7 +1387,7 @@ public class GLRecordingPipeline {
                         }
                     } catch (Exception ignored) {}
                 }
-                videoEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                videoEncoder = configureVideoEncoderWithFallback(videoEncoder, format, currentMimeType);
                 try {
                     FLog.i(TAG, "[ENCODER] Video encoder (H.264 fallback): " + encoderCanonicalNameSafe(videoEncoder)
                             + " | MIME=" + currentMimeType + " | " + encoderWidth + "x" + encoderHeight);
@@ -3957,6 +3963,48 @@ public class GLRecordingPipeline {
             return codec.getName();
         } catch (Exception ignored) {
             return "";
+        }
+    }
+
+    /**
+     * Configures the video encoder, retrying without KEY_PREPEND_HEADER_TO_SYNC_FRAMES
+     * if the encoder rejects it. Some OMX encoders (e.g. IMG.TOPAZ on Huawei/Kirin
+     * devices) return OPERATION_NOT_SUPPORTED (-22) from configureCodec when the
+     * vendor "prepend SPS/PPS to IDR frames" config is requested, which makes
+     * MediaCodec.configure() throw — recording never starts. A failed configure
+     * leaves the codec instance unusable, so the retry creates a fresh instance.
+     * Returns the configured encoder (may be a different instance than passed in).
+     */
+    private MediaCodec configureVideoEncoderWithFallback(
+            MediaCodec encoder, MediaFormat format, String mimeType) throws Exception {
+        try {
+            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            return encoder;
+        } catch (Exception firstFailure) {
+            if (!format.containsKey(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES)) {
+                throw firstFailure;
+            }
+            FLog.w(TAG, "[ENCODER] configure failed with KEY_PREPEND_HEADER_TO_SYNC_FRAMES set ("
+                    + firstFailure.getMessage() + ") — retrying without it");
+            try {
+                encoder.release();
+            } catch (Exception ignored) {
+            }
+            MediaFormat retryFormat = MediaFormat.createVideoFormat(
+                    mimeType, encoderWidth, encoderHeight);
+            configureBasicEncoder(retryFormat, false);
+            MediaCodec retryEncoder = MediaCodec.createEncoderByType(mimeType);
+            try {
+                retryEncoder.configure(retryFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                FLog.i(TAG, "[ENCODER] configured without prepend-header key — recording continues");
+                return retryEncoder;
+            } catch (Exception secondFailure) {
+                try {
+                    retryEncoder.release();
+                } catch (Exception ignored) {
+                }
+                throw secondFailure;
+            }
         }
     }
 
