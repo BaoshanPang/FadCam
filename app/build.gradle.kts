@@ -29,7 +29,7 @@ android {
 
     defaultConfig {
         applicationId = "com.fadcam"
-        minSdk = 28
+        minSdk = 26
         targetSdk = 36
         versionCode = 31
         versionName = "3.0.1"

@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.CountDownTimer;
 import android.util.Log;
@@ -46,7 +47,10 @@ public class WhatsNewActivity extends AppCompatActivity {
         setContentView(R.layout.activity_whats_new);
 
         // Set edge-to-edge display and status bar color
-        getWindow().setDecorFitsSystemWindows(false);
+        // setDecorFitsSystemWindows() was introduced in Android 11 (API 30)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            getWindow().setDecorFitsSystemWindows(false);
+        }
         getWindow().setStatusBarColor(0xFF0d0d0d); // Match gradient bottom color
 
         // Initialize views
